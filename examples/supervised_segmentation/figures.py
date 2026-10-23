@@ -124,6 +124,7 @@ def results_table():
         summary = json.loads(path.read_text())
         rows.append({
             "run": path.parent.name, "model": summary["model"], "category": summary["category"],
+            "training": summary.get("training", "fixed_epochs"),
             "seed": summary["seed"], "train_minutes": summary["train_minutes"],
             "train_peak_vram_mb": summary["train_peak_vram_mb"],
             "inference_ms_per_image": summary["inference_ms_per_image"],
@@ -131,7 +132,7 @@ def results_table():
             **summary["metrics"],
         })
     table = pd.DataFrame(rows)
-    numeric = table.drop(columns=["run", "seed"]).groupby(["category", "model"])
+    numeric = table.drop(columns=["run", "seed"]).groupby(["category", "model", "training"])
     summary_table = numeric.mean().round(4).astype(str) + " ± " + numeric.std().round(4).fillna(0).astype(str)
     summary_table.insert(0, "runs", numeric.size())
 
