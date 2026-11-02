@@ -89,7 +89,7 @@ class Dice(Metric):
 
 
 def all_metrics():
-    return [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL), F1(MetricLvl.PIXEL), IoU(), Dice()]
+    return [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL), F1(MetricLvl.IMAGE), F1(MetricLvl.PIXEL), IoU(), Dice()]
 
 
 # family split
