@@ -334,6 +334,8 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     """Train on the family train split, select the best epoch on the family validation split
     (pixel max-F1, early stopping), then evaluate the best model on the MVTec AD test set.
     subset_size: use only the first N training images (for a quick test)."""
+
+    # loading the data (train, validation, test) and choosing the metrics
     device = torch.device(device)
     train_dataset = SupervisedSegmentationDataset(MANIFEST_DIR / category / "train_manifest_family.csv", DATA_ROOT)
     val_dataset = ValidationDataset(MANIFEST_DIR / category / "val_manifest_family.csv", DATA_ROOT)
@@ -343,11 +345,14 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     metrics = all_metrics()
 
+    # creating the model and the trainer (with early stopping)
     set_seed(seed)
     model = SupervisedSegmentation(arch, encoder_weights=encoder_weights).to(device)
     train_args = SegmentationTrainArgs(batch_size=batch_size, epochs=max_epochs, evaluation_epoch_interval=1)
     trainer = EarlyStoppingTrainer(train_args, model, train_dataset, val_dataset, [F1(MetricLvl.PIXEL)], device,
                                    patience=patience)
+
+    # training, measuring the training time and the peak GPU memory
     if device.type == "cuda":
         torch.cuda.reset_peak_memory_stats()
     start = time.time()
@@ -355,9 +360,11 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     train_minutes = (time.time() - start) / 60
     train_vram = torch.cuda.max_memory_allocated() / 1024**2 if device.type == "cuda" else None
 
+    # measuring the inference speed and evaluating the best model on the test set
     inference_ms, inference_vram = measure_inference(model, test_loader, len(test_dataset), device)
     report = Evaluator.evaluate(model, test_loader, metrics, device, postprocess=lambda x: x)
 
+    # collecting all settings and results in one summary
     summary = {
         "model": f"{arch}_resnet50_smp", "training": "early_stopping", "category": category, "seed": seed,
         "split": "family",
@@ -369,6 +376,8 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
         "inference_ms_per_image": round(inference_ms, 1), "inference_peak_vram_mb": inference_vram and round(inference_vram, 1),
         "metrics": {name: round(float(value), 4) for name, value in report.items()},
     }
+
+    # saving the model and the results in the run folder
     save_run(arch, category, seed, model, summary, save, last_state=trainer.last_state, history=trainer.history)
     return summary
 
