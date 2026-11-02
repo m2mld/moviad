@@ -45,7 +45,8 @@ def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 # metrics
@@ -94,47 +95,59 @@ def all_metrics():
 # family split
 def make_family_split(category, val_fraction=0.2, seed=42):
     """Train/val manifests where an MVTec normal image and its MIRAGE images stay in the same split."""
+
+    # finding the folders with the normal MVTec images and the MIRAGE images,
+    # and for each MIRAGE image finding the MVTec image it was generated from (its family)
     normal_dir = DATA_ROOT / "mvtec" / category / "train" / "good"
     mirage_dir = DATA_ROOT / "mirage" / category
 
     tracking = pd.read_csv(TRACKING_CSV)
-    rows = tracking[tracking["object"] == category]
-    source_of = {Path(img).stem: Path(base).stem for img, base in zip(rows["img_path"], rows["base_img_path"])}
+    category_tracking = tracking[tracking["object"] == category]
+    mirage_to_source = {Path(img).stem: Path(base).stem for img, base in zip(category_tracking["img_path"], category_tracking["base_img_path"])}
 
-    records, empty_masks = [], []
+    # adding one row for each normal MVTec training image
+    # a normal image is its own family (family = image name, e.g. "132")
+    samples, empty_masks = [], []
     for path in sorted(normal_dir.glob("*.png")):
-        if not path.name.startswith("._"):
-            records.append({"sample_id": f"mvtec_{path.stem}", "source": "mvtec",
+        if not path.name.startswith("._"): # skipping macOS metadata files, they are not images
+            samples.append({"sample_id": f"mvtec_{path.stem}", "source": "mvtec",
                             "image_path": str(path.relative_to(DATA_ROOT)), "family": path.stem})
+
+    # adding one row for each MIRAGE image, in the family of its source MVTec image
     for path in sorted((mirage_dir / "images").glob("*.png")):
         if path.name.startswith("._"):
             continue
+        # skipping images with an empty mask. The defect is not marked, so the image would teach a wrong label
         mask = np.array(Image.open(mirage_dir / "masks" / f"{path.stem}_mask.png").convert("L")) > 127
         if not mask.any():
             empty_masks.append(path.stem)
             continue
-        records.append({"sample_id": f"mirage_{path.stem}", "source": "mirage",
-                        "image_path": str(path.relative_to(DATA_ROOT)), "family": source_of[path.stem]})
-    table = pd.DataFrame(records)
+        samples.append({"sample_id": f"mirage_{path.stem}", "source": "mirage",
+                        "image_path": str(path.relative_to(DATA_ROOT)), "family": mirage_to_source[path.stem]})
+    samples_table = pd.DataFrame(samples)
 
-    families = sorted(table["family"].unique())
+    # Splitting by family, not by image. Sorting the families (so the same seed always
+    # gives the same split), shuffling them, and putting 20% of the families in validation.
+    # Every image goes to the split of its family, so related images never cross the split
+    families = sorted(samples_table["family"].unique())
     random.Random(seed).shuffle(families)
     val_families = set(families[: round(len(families) * val_fraction)])
-    table["split"] = np.where(table["family"].isin(val_families), "val", "train")
+    samples_table["split"] = np.where(samples_table["family"].isin(val_families), "val", "train")
 
-    families_in_both = (table.groupby("family")["split"].nunique() > 1).sum()
+    # safety check (no family in both splits), then save one manifest per split
+    families_in_both = (samples_table.groupby("family")["split"].nunique() > 1).sum()
     assert families_in_both == 0
 
     output_dir = MANIFEST_DIR / category
     output_dir.mkdir(parents=True, exist_ok=True)
     for split in ["train", "val"]:
-        part = table[table["split"] == split].drop(columns="split")
-        part.to_csv(output_dir / f"{split}_manifest_family.csv", index=False)
-        print(f"{category} {split}: {part['family'].nunique()} families, {len(part)} images "
-              f"({(part.source == 'mvtec').sum()} MVTec + {(part.source == 'mirage').sum()} MIRAGE)")
+        split_table = samples_table[samples_table["split"] == split].drop(columns="split")
+        split_table.to_csv(output_dir / f"{split}_manifest_family.csv", index=False)
+        print(f"{category} {split}: {split_table['family'].nunique()} families, {len(split_table)} images "
+              f"({(split_table.source == 'mvtec').sum()} MVTec + {(split_table.source == 'mirage').sum()} MIRAGE)")
     print("Excluded empty masks:", empty_masks)
     print("Families in both splits:", families_in_both)
-    return table
+    return samples_table
 
 
 # training dataset
