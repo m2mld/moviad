@@ -4,7 +4,6 @@ Data layout (symbolic links):
     DATA_ROOT/mvtec  -> MVTec AD      (<category>/train, test, ground_truth)
     DATA_ROOT/mirage -> MIRAGE mvtec  (<category>/images, masks)
 """
-import copy
 import json
 import math
 import random
@@ -29,9 +28,10 @@ from moviad.models.dinomaly.dinomaly import Dinomaly, DinomalyTrainArgs
 from moviad.models.training_args import TrainingArgs
 from moviad.models.vad_model import VADModel
 from moviad.trainers.trainer import Trainer
+from moviad.trainers.trainer_early_stopping import EarlyStoppingTrainer
 from moviad.utilities.configurations import Split
 from moviad.utilities.evaluation.evaluator import Evaluator
-from moviad.utilities.evaluation.metrics import F1, Metric, MetricLvl, RocAuc
+from moviad.utilities.evaluation.metrics import Dice, F1, IoU, MetricLvl, RocAuc
 
 # paths
 HOME = Path.home()
@@ -50,44 +50,6 @@ def set_seed(seed):
 
 
 # metrics
-class IoU(Metric):
-    """Intersection over Union of the anomalous class at a fixed threshold, pooled over all pixels."""
-
-    def __init__(self, level: MetricLvl = MetricLvl.PIXEL, threshold: float = 0.5):
-        super().__init__(level)
-        self.threshold = threshold
-
-    @property
-    def name(self):
-        return f"{self.level.value}_iou"
-
-    def compute(self, gt, pred):
-        gt_binary = np.asarray(gt).flatten() > 0
-        pred_binary = np.asarray(pred).flatten() >= self.threshold
-        intersection = np.logical_and(gt_binary, pred_binary).sum()
-        union = np.logical_or(gt_binary, pred_binary).sum()
-        return float(intersection / union) if union > 0 else 1.0
-
-
-class Dice(Metric):
-    """Dice coefficient (F1 at a fixed threshold) of the anomalous class, pooled over all pixels."""
-
-    def __init__(self, level: MetricLvl = MetricLvl.PIXEL, threshold: float = 0.5):
-        super().__init__(level)
-        self.threshold = threshold
-
-    @property
-    def name(self):
-        return f"{self.level.value}_dice"
-
-    def compute(self, gt, pred):
-        gt_binary = np.asarray(gt).flatten() > 0
-        pred_binary = np.asarray(pred).flatten() >= self.threshold
-        intersection = np.logical_and(gt_binary, pred_binary).sum()
-        total = gt_binary.sum() + pred_binary.sum()
-        return float(2 * intersection / total) if total > 0 else 1.0
-
-
 def all_metrics():
     return [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL), F1(MetricLvl.IMAGE), F1(MetricLvl.PIXEL), IoU(), Dice()]
 
@@ -241,50 +203,6 @@ class SupervisedSegmentation(VADModel):
         loss.backward()
         training_args.optimizer.step()
         return loss.item()
-
-
-# training with early stopping
-class EarlyStoppingTrainer(Trainer):
-    """MoViAD Trainer that evaluates on the validation set after every epoch,
-    keeps the best model and stops when the monitored metric has not improved for `patience` epochs.
-    At the end the model holds the weights of the best epoch; the last weights are kept in `last_state`."""
-
-    def __init__(self, *args, patience=5, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.patience = patience
-        self.monitor = self.metrics[0].name
-        self.best_score, self.best_epoch = -1.0, -1
-        self.history, self.last_state = [], None
-
-    def train(self):
-        self.train_args.init_train(self.model)
-        best_state, epochs_without_improvement = None, 0
-
-        for epoch in range(self.train_args.epochs):
-            self.model.train()
-            print(f"EPOCH: {epoch}")
-            train_loss = self.model.train_epoch(epoch, self.train_dataloader, self.train_args)
-            # model outputs are probabilities, so no extra normalisation
-            results = Evaluator.evaluate(self.model, self.eval_dataloader, self.metrics, self.device,
-                                         postprocess=lambda x: x)
-            score = float(results[self.monitor])
-            self.history.append({"epoch": epoch, "train_loss": train_loss,
-                                 **{name: float(value) for name, value in results.items()}})
-            print(f"train loss {train_loss:.4f}, validation {self.monitor} {score:.4f}")
-
-            if score > self.best_score:
-                self.best_score, self.best_epoch = score, epoch
-                best_state = copy.deepcopy(self.model.state_dict())
-                epochs_without_improvement = 0
-            else:
-                epochs_without_improvement += 1
-                if epochs_without_improvement >= self.patience:
-                    print(f"Early stopping at epoch {epoch}, best epoch {self.best_epoch}")
-                    break
-
-        self.last_state = copy.deepcopy(self.model.state_dict())
-        self.model.load_state_dict(best_state)
-
 
 # helpers
 def test_dataset_for(category, size):
