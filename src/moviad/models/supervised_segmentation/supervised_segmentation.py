@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import segmentation_models_pytorch as smp
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from moviad.models.training_args import TrainingArgs
 from moviad.models.vad_model import VADModel
@@ -38,6 +39,16 @@ class SupervisedSegmentation(VADModel):
             return logits
         anomaly_maps = logits.softmax(dim=1)[:, 1]
         return anomaly_maps, anomaly_maps.amax(dim=(1, 2))
+
+    def train_epoch(self, epoch, train_dataloader, training_args):
+        """Train for one epoch and return the average training loss.
+
+        Unlike unsupervised VAD models, which receive only images, each batch here
+        contains images and their pixel masks (normal images have an empty mask)"""
+        total_loss = 0
+        for batch in tqdm(train_dataloader):
+            total_loss += self.train_step(batch, training_args)
+        return total_loss / len(train_dataloader)
 
     def train_step(self, batch, training_args):
         images, masks = batch
