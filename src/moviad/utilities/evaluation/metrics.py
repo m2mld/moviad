@@ -239,3 +239,41 @@ class ProAuc(Metric):
         per_pixel_roc_auc = auc(fprs_selected, pros_mean_selected)
 
         return per_pixel_roc_auc
+
+
+class IoU(Metric):
+    """Intersection over Union of the anomalous class at a fixed threshold, pooled over all pixels."""
+
+    def __init__(self, level: MetricLvl = MetricLvl.PIXEL, threshold: float = 0.5):
+        super().__init__(level)
+        self.threshold = threshold
+
+    @property
+    def name(self):
+        return f"{self.level.value}_iou"
+
+    def compute(self, gt, pred):
+        gt_binary = np.asarray(gt).flatten() > 0
+        pred_binary = np.asarray(pred).flatten() >= self.threshold
+        intersection = np.logical_and(gt_binary, pred_binary).sum()
+        union = np.logical_or(gt_binary, pred_binary).sum()
+        return float(intersection / union) if union > 0 else 1.0
+
+
+class Dice(Metric):
+    """Dice coefficient (F1 at a fixed threshold) of the anomalous class, pooled over all pixels."""
+
+    def __init__(self, level: MetricLvl = MetricLvl.PIXEL, threshold: float = 0.5):
+        super().__init__(level)
+        self.threshold = threshold
+
+    @property
+    def name(self):
+        return f"{self.level.value}_dice"
+
+    def compute(self, gt, pred):
+        gt_binary = np.asarray(gt).flatten() > 0
+        pred_binary = np.asarray(pred).flatten() >= self.threshold
+        intersection = np.logical_and(gt_binary, pred_binary).sum()
+        total = gt_binary.sum() + pred_binary.sum()
+        return float(2 * intersection / total) if total > 0 else 1.0
