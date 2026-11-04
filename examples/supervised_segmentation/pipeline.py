@@ -14,14 +14,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torchvision.transforms.functional as TF
 from PIL import Image
 from torch.utils.data import DataLoader, Dataset, Subset
-from torchvision.transforms import InterpolationMode
 
 from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
-from moviad.datasets.supervised_segmentation.supervised_segmentation_dataset import make_family_split
+from moviad.datasets.supervised_segmentation.supervised_segmentation_dataset import SupervisedSegmentationDataset, make_family_split
 from moviad.models.dinomaly.dinomaly import Dinomaly, DinomalyTrainArgs
 from moviad.models.supervised_segmentation.supervised_segmentation import SegmentationTrainArgs, SupervisedSegmentation
 from moviad.trainers.trainer import Trainer
@@ -49,38 +47,6 @@ def set_seed(seed):
 # metrics
 def all_metrics():
     return [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL), F1(MetricLvl.IMAGE), F1(MetricLvl.PIXEL), IoU(), Dice()]
-
-
-# training dataset
-class SupervisedSegmentationDataset(Dataset):
-    """Real normal MVTec images and MIRAGE synthetic anomalies, each with a pixel mask."""
-
-    def __init__(self, manifest_path, data_root, img_size=(256, 256)):
-        self.samples = pd.read_csv(manifest_path)
-        self.data_root = Path(data_root)
-        self.img_size = img_size
-
-    def __len__(self):
-        return len(self.samples)
-
-    # loading the image
-    def __getitem__(self, index):
-        row = self.samples.iloc[index]
-        image_path = self.data_root / row["image_path"]
-        image = TF.to_tensor(Image.open(image_path).convert("RGB"))
-
-        # making the mask (MIRAGE images have a defect mask, normal MVTec images get an empty mask with no defect)
-        if row["source"] == "mirage":
-            mask_path = image_path.parent.parent / "masks" / f"{image_path.stem}_mask.png"
-            mask = np.array(Image.open(mask_path).convert("L")) > 127
-            mask = torch.from_numpy(mask).unsqueeze(0).float()
-        else:
-            mask = torch.zeros(1, image.shape[1], image.shape[2])
-
-        # resizing the image and the mask to the same size
-        image = TF.resize(image, list(self.img_size), antialias=True)
-        mask = TF.resize(mask, list(self.img_size), interpolation=InterpolationMode.NEAREST)
-        return image, mask.long()
 
 
 class ValidationDataset(Dataset):
