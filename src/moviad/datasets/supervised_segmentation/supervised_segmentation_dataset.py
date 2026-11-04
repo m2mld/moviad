@@ -9,6 +9,7 @@ from PIL import Image
 from moviad.datasets.vad_dataset import VADDataset
 from moviad.utilities.configurations import Split
 
+
 def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=42):
     """Train/val manifests where an MVTec normal image and its MIRAGE images stay in the same split."""
     data_root, manifest_dir = Path(data_root), Path(manifest_dir)
@@ -79,7 +80,6 @@ class SupervisedSegmentationDataset(VADDataset):
     def __len__(self):
         return len(self.samples)
 
-    # loading the image
     def __getitem__(self, index):
         row = self.samples.iloc[index]
         image_path = self.data_root / row["image_path"]

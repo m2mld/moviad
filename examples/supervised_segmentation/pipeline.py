@@ -14,7 +14,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from PIL import Image
 from torch.utils.data import DataLoader, Subset
 
 from moviad.datasets.dataset_arguments import DatasetArguments
