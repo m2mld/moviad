@@ -24,7 +24,7 @@ parser.add_argument("--no-save", action="store_true")
 args = parser.parse_args()
 
 if args.task == "split":
-    pipeline.make_family_split(args.category)
+    pipeline.make_family_split(args.category, pipeline.DATA_ROOT, pipeline.MANIFEST_DIR)
 elif args.task == "seg":
     pipeline.train_and_evaluate_segmentation(args.category, arch=args.arch, seed=args.seed,
                                              max_epochs=args.max_epochs, patience=args.patience,
