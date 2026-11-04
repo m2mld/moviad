@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Dataset, Subset
+from torch.utils.data import DataLoader, Subset
 
 from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
@@ -48,21 +48,6 @@ def set_seed(seed):
 def all_metrics():
     return [RocAuc(MetricLvl.IMAGE), RocAuc(MetricLvl.PIXEL), F1(MetricLvl.IMAGE), F1(MetricLvl.PIXEL), IoU(), Dice()]
 
-
-class ValidationDataset(Dataset):
-    """Validation images in the format MoViAD's Evaluator expects: (image, label, mask, path)."""
-
-    def __init__(self, manifest_path, data_root, img_size=(256, 256)):
-        self.base = SupervisedSegmentationDataset(manifest_path, data_root, img_size)
-
-    def __len__(self):
-        return len(self.base)
-
-    def __getitem__(self, index):
-        image, mask = self.base[index]
-        label = int(mask.any())
-        path = str(self.base.samples.iloc[index]["image_path"])
-        return image, label, mask, path
 
 # helpers
 def test_dataset_for(category, size):
@@ -115,8 +100,11 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
 
     # loading the data (train, validation, test) and choosing the metrics
     device = torch.device(device)
-    train_dataset = SupervisedSegmentationDataset(MANIFEST_DIR / category / "train_manifest_family.csv", DATA_ROOT)
-    val_dataset = ValidationDataset(MANIFEST_DIR / category / "val_manifest_family.csv", DATA_ROOT)
+    dataset_args = DatasetArguments(dataset_path=str(DATA_ROOT), img_size=(256, 256), gt_mask_size=(256, 256))
+    train_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.TRAIN,
+                                                  MANIFEST_DIR / category / "train_manifest_family.csv")
+    val_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.VAL,
+                                                MANIFEST_DIR / category / "val_manifest_family.csv")
     if subset_size is not None:
         train_dataset = Subset(train_dataset, list(range(subset_size)))
     test_dataset = test_dataset_for(category, (256, 256))

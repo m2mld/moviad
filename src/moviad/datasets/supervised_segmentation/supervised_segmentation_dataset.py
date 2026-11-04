@@ -4,10 +4,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-import torchvision.transforms.functional as TF
 from PIL import Image
-from torch.utils.data import Dataset
-from torchvision.transforms import InterpolationMode
+
+from moviad.datasets.vad_dataset import VADDataset
+from moviad.utilities.configurations import Split
 
 def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=42):
     """Train/val manifests where an MVTec normal image and its MIRAGE images stay in the same split."""
@@ -68,13 +68,13 @@ def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=
 
 
     # training dataset
-class SupervisedSegmentationDataset(Dataset):
+class SupervisedSegmentationDataset(VADDataset):
     """Real normal MVTec images and MIRAGE synthetic anomalies, each with a pixel mask."""
 
-    def __init__(self, manifest_path, data_root, img_size=(256, 256)):
+    def __init__(self, dataset_arguments, category, split, manifest_path):
+        super().__init__(dataset_arguments, category, split)
         self.samples = pd.read_csv(manifest_path)
-        self.data_root = Path(data_root)
-        self.img_size = img_size
+        self.data_root = Path(dataset_arguments.dataset_path)
 
     def __len__(self):
         return len(self.samples)
@@ -83,19 +83,20 @@ class SupervisedSegmentationDataset(Dataset):
     def __getitem__(self, index):
         row = self.samples.iloc[index]
         image_path = self.data_root / row["image_path"]
-        image = TF.to_tensor(Image.open(image_path).convert("RGB"))
 
-        # making the mask (MIRAGE images have a defect mask, normal MVTec images get an empty mask with no defect)
+        # loading the image (VADDataset's transform converts it to a tensor and resizes it)
+        image = self.transform_image(Image.open(image_path).convert("RGB"))
+
+        # making the mask: MIRAGE images have a defect mask, normal MVTec images get an empty mask (no defect)
         if row["source"] == "mirage":
             mask_path = image_path.parent.parent / "masks" / f"{image_path.stem}_mask.png"
-            mask = np.array(Image.open(mask_path).convert("L")) > 127
-            mask = torch.from_numpy(mask).unsqueeze(0).float()
+            mask = self.transform_mask(Image.open(mask_path).convert("L")) > 0.5
         else:
-            mask = torch.zeros(1, image.shape[1], image.shape[2])
+            mask = torch.zeros(1, *self.dataset_arguments.gt_mask_size, dtype=torch.bool)
 
-        # resizing the image and the mask to the same size
-        image = TF.resize(image, list(self.img_size), antialias=True)
-        mask = TF.resize(mask, list(self.img_size), interpolation=InterpolationMode.NEAREST)
-        return image, mask.long()
-
+        # training returns (image, mask); validation returns the format of MoViAD's Evaluator
+        if self.split == Split.TRAIN:
+            return image, mask.long()
+        label = int(mask.any())
+        return image, label, mask.long(), str(row["image_path"])
 
