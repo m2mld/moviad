@@ -11,8 +11,8 @@ import argparse
 import pipeline
 
 parser = argparse.ArgumentParser()
-parser.add_argument("task", choices=["split", "seg", "dinomaly"])
-parser.add_argument("category")
+parser.add_argument("task", choices=["split", "seg", "dinomaly", "reeval"])
+parser.add_argument("category", help="category; for reeval: a run folder name, or 'all'")
 parser.add_argument("--arch", default="pspnet", help="seg only: smp architecture, e.g. pspnet, unet, deeplabv3")
 parser.add_argument("--seed", type=int, default=42)
 parser.add_argument("--device", default="cuda")
@@ -29,6 +29,15 @@ elif args.task == "seg":
     pipeline.train_and_evaluate_segmentation(args.category, arch=args.arch, seed=args.seed,
                                              max_epochs=args.max_epochs, patience=args.patience,
                                              device=args.device, subset_size=args.subset, save=not args.no_save)
+
+elif args.task == "reeval":
+    if args.category == "all":
+        pipeline.reevaluate_all_runs(device=args.device)
+    else:
+        summary = pipeline.reevaluate_run(pipeline.RUNS_DIR / "runs" / args.category, device=args.device)
+        print("original:", summary["metrics_original"])
+        print("new:     ", summary["metrics"])
+
 else:
     pipeline.train_and_evaluate_dinomaly(args.category, seed=args.seed, total_iterations=args.iterations,
                                          device=args.device, save=not args.no_save)

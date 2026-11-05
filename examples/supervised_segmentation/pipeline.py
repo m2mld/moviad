@@ -186,3 +186,49 @@ def train_and_evaluate_dinomaly(category, seed=42, batch_size=32, total_iteratio
     }
     save_run("dinomaly", category, seed, model, summary, save)
     return summary
+
+# re-evaluation of saved runs (adds metrics that did not exist when a run was trained, e.g. image F1)
+def reevaluate_run(run_dir, device="cuda"):
+    """Load the saved model of a run, evaluate it again on the test set with all_metrics() and update summary.json.
+    The metrics computed at training time are kept in summary["metrics_original"]."""
+    device = torch.device(device)
+    run_dir = Path(run_dir)
+    summary = json.loads((run_dir / "summary.json").read_text())
+
+    # rebuilding the model of the run (same settings as in training) and loading the saved weights
+    if summary["model"].startswith("dinomaly"):
+        model = Dinomaly("deit_tiny_patch16_224.fb_in1k")
+        image_size, batch_size = (224, 224), 32
+    else:
+        arch = summary["model"].split("_")[0]  # e.g. "unet_resnet50_smp" -> "unet"
+        model = SupervisedSegmentation(arch, encoder_weights=None)  # the weights come from model.pt
+        image_size, batch_size = (256, 256), 8
+    model.load_state_dict(torch.load(run_dir / "model.pt", map_location=device))
+    model.to(device).eval()
+
+    # evaluating on the test set with the same evaluator and post-processing as at training time
+    test_loader = DataLoader(test_dataset_for(summary["category"], image_size), batch_size=batch_size, shuffle=False)
+    if summary["model"].startswith("dinomaly"):
+        report = Evaluator.evaluate(model, test_loader, all_metrics(), device)  # default min-max normalisation
+    else:
+        report = Evaluator.evaluate(model, test_loader, all_metrics(), device, postprocess=lambda x: x)
+
+    # keeping the original metrics and saving the new ones
+    summary.setdefault("metrics_original", summary["metrics"])
+    summary["metrics"] = {name: round(float(value), 4) for name, value in report.items()}
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+def reevaluate_all_runs(device="cuda", include_fixed_epochs=False):
+    """Re-evaluate every saved run; fixed-epoch PSPNet runs only if include_fixed_epochs is True."""
+    for summary_path in sorted((RUNS_DIR / "runs").glob("*/summary.json")):
+        summary = json.loads(summary_path.read_text())
+        if summary.get("training") != "early_stopping" and not summary["model"].startswith("dinomaly") \
+                and not include_fixed_epochs:
+            continue
+        summary = reevaluate_run(summary_path.parent, device)
+
+        # check: the metrics that already existed must not change
+        largest_change = max(abs(summary["metrics"][name] - value) for name, value in summary["metrics_original"].items())
+        print(f"{summary_path.parent.name}: img_f1 {summary['metrics']['img_f1']:.4f}, "
+              f"largest change of the old metrics {largest_change:.4f}")
