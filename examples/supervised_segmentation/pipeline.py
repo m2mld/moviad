@@ -53,6 +53,31 @@ def test_dataset_for(category, size):
     args = DatasetArguments(dataset_path=str(DATA_ROOT / "mvtec"), img_size=size, gt_mask_size=size)
     return MVTecDataset(args, category=category, split=Split.TEST)
 
+# Scenario 2 (real anomalous test images moved to training)
+def scenario2_folder(category, n_test_anomalous=50):
+    return MANIFEST_DIR / category / f"scenario2_test{n_test_anomalous}"
+
+
+def scenario2_manifests(category, n_test_anomalous=50):
+    """Training and validation manifests of Scenario 2: the family split of Scenario 1 (normal + MIRAGE)
+    plus the real anomalous images chosen by make_real_anomaly_split."""
+    folder = scenario2_folder(category, n_test_anomalous)
+    for part, real_part in [("train", "train_real"), ("val", "val_real")]:
+        family = pd.read_csv(MANIFEST_DIR / category / f"{part}_manifest_family.csv")
+        real = pd.read_csv(folder / f"{real_part}_manifest.csv")
+        pd.concat([family, real], ignore_index=True).to_csv(folder / f"{part}_manifest.csv", index=False)
+    return folder / "train_manifest.csv", folder / "val_manifest.csv"
+
+
+def scenario2_test_dataset(category, size, n_test_anomalous=50):
+    """The reduced test set of Scenario 2: only the MVTec AD test images listed in the Scenario 2 test manifest."""
+    full_test = test_dataset_for(category, size)
+    kept = set(pd.read_csv(scenario2_folder(category, n_test_anomalous) / "test_manifest.csv")["image_path"])
+    indices = [index for index, path in enumerate(full_test.samples["image_path"])
+               if str(Path(path).relative_to(DATA_ROOT)) in kept]
+    assert len(indices) == len(kept)  # every image of the manifest must be found
+    return Subset(full_test, indices)
+
 
 def measure_inference(model, loader, n_images, device):
     """Average time per image and peak GPU memory, model only (no metrics)."""
@@ -92,21 +117,28 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
 
 # supervised segmentation (any smp architecture)
 def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size=8, max_epochs=50, patience=5,
-                                    device="cuda", subset_size=None, save=True, encoder_weights="imagenet"):
+                                    device="cuda", subset_size=None, save=True, encoder_weights="imagenet",
+                                    scenario=1):
     """Train on the family train split, select the best epoch on the family validation split
     (pixel max-F1, early stopping), then evaluate the best model on the MVTec AD test set.
+    scenario=2: the real anomalous test images of the Scenario 2 split are added to training and validation,
+    and the model is evaluated on the reduced Scenario 2 test set.
     subset_size: use only the first N training images (for a quick test)."""
 
     # loading the data (train, validation, test) and choosing the metrics
     device = torch.device(device)
     dataset_args = DatasetArguments(dataset_path=str(DATA_ROOT), img_size=(256, 256), gt_mask_size=(256, 256))
-    train_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.TRAIN,
-                                                  MANIFEST_DIR / category / "train_manifest_family.csv")
-    val_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.VAL,
-                                                MANIFEST_DIR / category / "val_manifest_family.csv")
+    if scenario == 1:
+        train_manifest = MANIFEST_DIR / category / "train_manifest_family.csv"
+        val_manifest = MANIFEST_DIR / category / "val_manifest_family.csv"
+        test_dataset = test_dataset_for(category, (256, 256))
+    else:
+        train_manifest, val_manifest = scenario2_manifests(category)
+        test_dataset = scenario2_test_dataset(category, (256, 256))
+    train_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.TRAIN, train_manifest)
+    val_dataset = SupervisedSegmentationDataset(dataset_args, category, Split.VAL, val_manifest)
     if subset_size is not None:
         train_dataset = Subset(train_dataset, list(range(subset_size)))
-    test_dataset = test_dataset_for(category, (256, 256))
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     metrics = all_metrics()
 
@@ -132,7 +164,7 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     # collecting all settings and results in one summary
     summary = {
         "model": f"{arch}_resnet50_smp", "training": "early_stopping", "category": category, "seed": seed,
-        "split": "family",
+        "scenario": scenario, "split": "family" if scenario == 1 else "family + real anomalies",
         "train_images": len(train_dataset), "val_images": len(val_dataset), "test_images": len(test_dataset),
         "max_epochs": max_epochs, "patience": patience, "epochs_run": len(trainer.history),
         "best_epoch": trainer.best_epoch, "best_val_" + trainer.monitor: round(trainer.best_score, 4),
@@ -143,7 +175,8 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     }
 
     # saving the model and the results in the run folder
-    save_run(arch, category, seed, model, summary, save, last_state=trainer.last_state, history=trainer.history)
+    run_name = arch if scenario == 1 else f"{arch}_scenario2"
+    save_run(run_name, category, seed, model, summary, save, last_state=trainer.last_state, history=trainer.history)
     return summary
 
 

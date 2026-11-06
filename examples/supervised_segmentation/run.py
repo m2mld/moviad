@@ -22,6 +22,7 @@ parser.add_argument("--subset", type=int, default=None, help="seg only: first N 
 parser.add_argument("--iterations", type=int, default=5000, help="dinomaly only")
 parser.add_argument("--no-save", action="store_true")
 parser.add_argument("--n-test", type=int, default=50, help="split2 only: anomalous images kept in the test set")
+parser.add_argument("--scenario", type=int, choices=[1, 2], default=1, help="seg only: 1 = normal + MIRAGE, 2 = + real anomalies")
 args = parser.parse_args()
 
 if args.task == "split":
@@ -29,7 +30,8 @@ if args.task == "split":
 elif args.task == "seg":
     pipeline.train_and_evaluate_segmentation(args.category, arch=args.arch, seed=args.seed,
                                              max_epochs=args.max_epochs, patience=args.patience,
-                                             device=args.device, subset_size=args.subset, save=not args.no_save)
+                                             device=args.device, subset_size=args.subset, save=not args.no_save,
+                                             scenario=args.scenario)
 
 elif args.task == "reeval":
     if args.category == "all":

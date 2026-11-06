@@ -157,9 +157,13 @@ class SupervisedSegmentationDataset(VADDataset):
         # loading the image (VADDataset's transform converts it to a tensor and resizes it)
         image = self.transform_image(Image.open(image_path).convert("RGB"))
 
-        # making the mask: MIRAGE images have a defect mask, normal MVTec images get an empty mask (no defect)
+        # making the mask: MIRAGE images have a defect mask next to the image, real anomalous MVTec test images
+        # (Scenario 2) have the mask path in the manifest, normal MVTec images get an empty mask (no defect)
         if row["source"] == "mirage":
             mask_path = image_path.parent.parent / "masks" / f"{image_path.stem}_mask.png"
+            mask = self.transform_mask(Image.open(mask_path).convert("L")) > 0.5
+        elif row["source"] == "mvtec_test":
+            mask_path = self.data_root / row["mask_path"]
             mask = self.transform_mask(Image.open(mask_path).convert("L")) > 0.5
         else:
             mask = torch.zeros(1, *self.dataset_arguments.gt_mask_size, dtype=torch.bool)
