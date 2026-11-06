@@ -1,4 +1,5 @@
 import copy
+import torch
 
 from moviad.trainers.trainer import Trainer
 from moviad.utilities.evaluation.evaluator import Evaluator
@@ -12,6 +13,16 @@ class EarlyStoppingTrainer(Trainer):
 
     def __init__(self, *args, patience=5, **kwargs):
         super().__init__(*args, **kwargs)
+        # DeepLabV3's ASPP pooling applies BatchNorm to a 1x1 map, which fails when the
+        # last training batch has a single image. Rebuild the training loader with the
+        # same settings as the base Trainer, but drop the last incomplete batch.
+        self.train_dataloader = torch.utils.data.DataLoader(
+            self.train_dataloader.dataset,
+            batch_size=self.train_dataloader.batch_size,
+            shuffle=True,
+            num_workers=4,
+            drop_last=True,
+        )
         self.patience = patience
         self.monitor = self.metrics[0].name
         self.best_score, self.best_epoch = -1.0, -1

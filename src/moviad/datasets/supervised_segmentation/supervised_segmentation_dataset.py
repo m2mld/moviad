@@ -12,7 +12,7 @@ from moviad.datasets.vad_dataset import VADDataset
 from moviad.utilities.configurations import Split
 
 
-def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=42):
+def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, synthetic_test_fraction=0.1, seed=42):
     """Train/val manifests where an MVTec normal image and its MIRAGE images stay in the same split."""
     data_root, manifest_dir = Path(data_root), Path(manifest_dir)
 
@@ -47,12 +47,21 @@ def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=
     samples_table = pd.DataFrame(samples)
 
     # Splitting by family, not by image. Sorting the families (so the same seed always
-    # gives the same split), shuffling them, and putting 20% of the families in validation.
+    # gives the same split) and shuffling them. The first 10% of the families go to the
+    # synthetic test set, the next 20% to validation, the rest to training.
     # Every image goes to the split of its family, so related images never cross the split
     families = sorted(samples_table["family"].unique())
     random.Random(seed).shuffle(families)
-    val_families = set(families[: round(len(families) * val_fraction)])
-    samples_table["split"] = np.where(samples_table["family"].isin(val_families), "val", "train")
+    n_test = round(len(families) * synthetic_test_fraction)
+    n_val = round(len(families) * val_fraction)
+    test_families = set(families[:n_test])
+    val_families = set(families[n_test:n_test + n_val])
+    samples_table["split"] = np.select(
+        [samples_table["family"].isin(test_families), samples_table["family"].isin(val_families)],
+        ["synthetic_test", "val"], default="train")
+    # the synthetic test set uses only the MIRAGE images of its families; its normal images
+    # come from the MVTec test set, so the normal MVTec images of these families are not used
+    samples_table = samples_table[~((samples_table["split"] == "synthetic_test") & (samples_table["source"] == "mvtec"))]
 
     # safety check (no family in both splits), then save one manifest per split
     families_in_both = (samples_table.groupby("family")["split"].nunique() > 1).sum()
@@ -60,7 +69,7 @@ def make_family_split(category, data_root, manifest_dir, val_fraction=0.2, seed=
 
     output_dir = manifest_dir / category
     output_dir.mkdir(parents=True, exist_ok=True)
-    for split in ["train", "val"]:
+    for split in ["train", "val", "synthetic_test"]:
         split_table = samples_table[samples_table["split"] == split].drop(columns="split")
         split_table.to_csv(output_dir / f"{split}_manifest_family.csv", index=False)
         print(f"{category} {split}: {split_table['family'].nunique()} families, {len(split_table)} images "
