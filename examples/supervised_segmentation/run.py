@@ -11,7 +11,7 @@ import argparse
 import pipeline
 
 parser = argparse.ArgumentParser()
-parser.add_argument("task", choices=["split", "seg", "dinomaly", "reeval"])
+parser.add_argument("task", choices=["split", "seg", "dinomaly", "reeval", "split2"])
 parser.add_argument("category", help="category; for reeval: a run folder name, or 'all'")
 parser.add_argument("--arch", default="pspnet", help="seg only: smp architecture, e.g. pspnet, unet, deeplabv3")
 parser.add_argument("--seed", type=int, default=42)
@@ -21,6 +21,7 @@ parser.add_argument("--patience", type=int, default=5, help="seg only: epochs wi
 parser.add_argument("--subset", type=int, default=None, help="seg only: first N training images")
 parser.add_argument("--iterations", type=int, default=5000, help="dinomaly only")
 parser.add_argument("--no-save", action="store_true")
+parser.add_argument("--n-test", type=int, default=50, help="split2 only: anomalous images kept in the test set")
 args = parser.parse_args()
 
 if args.task == "split":
@@ -37,7 +38,9 @@ elif args.task == "reeval":
         summary = pipeline.reevaluate_run(pipeline.RUNS_DIR / "runs" / args.category, device=args.device)
         print("original:", summary["metrics_original"])
         print("new:     ", summary["metrics"])
-
+elif args.task == "split2":
+    pipeline.make_real_anomaly_split(args.category, pipeline.DATA_ROOT, pipeline.MANIFEST_DIR,
+                                     n_test_anomalous=args.n_test, seed=args.seed)
 else:
     pipeline.train_and_evaluate_dinomaly(args.category, seed=args.seed, total_iterations=args.iterations,
                                          device=args.device, save=not args.no_save)

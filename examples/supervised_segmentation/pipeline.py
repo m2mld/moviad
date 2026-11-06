@@ -18,7 +18,7 @@ from torch.utils.data import DataLoader, Subset
 
 from moviad.datasets.dataset_arguments import DatasetArguments
 from moviad.datasets.mvtec.mvtec_dataset import MVTecDataset
-from moviad.datasets.supervised_segmentation.supervised_segmentation_dataset import SupervisedSegmentationDataset, make_family_split
+from moviad.datasets.supervised_segmentation.supervised_segmentation_dataset import SupervisedSegmentationDataset, make_family_split, make_real_anomaly_split
 from moviad.models.dinomaly.dinomaly import Dinomaly, DinomalyTrainArgs
 from moviad.models.supervised_segmentation.supervised_segmentation import SegmentationTrainArgs, SupervisedSegmentation
 from moviad.trainers.trainer import Trainer
