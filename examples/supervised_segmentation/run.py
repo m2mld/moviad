@@ -11,7 +11,7 @@ import argparse
 import pipeline
 
 parser = argparse.ArgumentParser()
-parser.add_argument("task", choices=["split", "seg", "dinomaly", "reeval", "split2"])
+parser.add_argument("task", choices=["split", "seg", "dinomaly", "reeval", "split2", "extra"])
 parser.add_argument("category", help="category; for reeval: a run folder name, or 'all'")
 parser.add_argument("--arch", default="pspnet", help="seg only: smp architecture, e.g. pspnet, unet, deeplabv3")
 parser.add_argument("--seed", type=int, default=42)
@@ -40,6 +40,8 @@ elif args.task == "reeval":
         summary = pipeline.reevaluate_run(pipeline.RUNS_DIR / "runs" / args.category, device=args.device)
         print("original:", summary["metrics_original"])
         print("new:     ", summary["metrics"])
+elif args.task == "extra":
+    pipeline.evaluate_all_extra_tests(device=args.device)
 elif args.task == "split2":
     pipeline.make_real_anomaly_split(args.category, pipeline.DATA_ROOT, pipeline.MANIFEST_DIR,
                                      n_test_anomalous=args.n_test, seed=args.seed)

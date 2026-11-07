@@ -79,6 +79,23 @@ def scenario2_test_dataset(category, size, n_test_anomalous=50):
     return Subset(full_test, indices)
 
 
+def synthetic_test_dataset(category, size):
+    """Synthetic test set: the normal MVTec AD test images (the same as in the real test set)
+    plus the MIRAGE images of the synthetic test families (never used in training or validation)."""
+    # the normal images of the real MVTec AD test set
+    real_test = test_dataset_for(category, size).samples
+    normal_paths = [str(Path(path).relative_to(DATA_ROOT)) for path in real_test.loc[real_test["label"] == "good", "image_path"]]
+    normal = pd.DataFrame({"source": "mvtec", "image_path": normal_paths})
+
+    # the MIRAGE images of the synthetic test families
+    mirage = pd.read_csv(MANIFEST_DIR / category / "synthetic_test_manifest_family.csv")[["source", "image_path"]]
+
+    # one manifest with both parts, read by the same dataset class as training and validation
+    manifest_path = MANIFEST_DIR / category / "synthetic_test_manifest.csv"
+    pd.concat([normal, mirage], ignore_index=True).to_csv(manifest_path, index=False)
+    dataset_args = DatasetArguments(dataset_path=str(DATA_ROOT), img_size=size, gt_mask_size=size)
+    return SupervisedSegmentationDataset(dataset_args, category, Split.TEST, manifest_path)
+
 def measure_inference(model, loader, n_images, device):
     """Average time per image and peak GPU memory, model only (no metrics)."""
     model.eval()
@@ -220,15 +237,10 @@ def train_and_evaluate_dinomaly(category, seed=42, batch_size=32, total_iteratio
     save_run("dinomaly", category, seed, model, summary, save)
     return summary
 
-# re-evaluation of saved runs (adds metrics that did not exist when a run was trained, e.g. image F1)
-def reevaluate_run(run_dir, device="cuda"):
-    """Load the saved model of a run, evaluate it again on the test set with all_metrics() and update summary.json.
-    The metrics computed at training time are kept in summary["metrics_original"]."""
-    device = torch.device(device)
-    run_dir = Path(run_dir)
+def load_run_model(run_dir, device):
+    """Rebuild the model of a saved run (same settings as in training) and load its saved weights.
+    Returns the model, the run summary, and the image size and batch size used for that model."""
     summary = json.loads((run_dir / "summary.json").read_text())
-
-    # rebuilding the model of the run (same settings as in training) and loading the saved weights
     if summary["model"].startswith("dinomaly"):
         model = Dinomaly("deit_tiny_patch16_224.fb_in1k")
         image_size, batch_size = (224, 224), 32
@@ -237,7 +249,15 @@ def reevaluate_run(run_dir, device="cuda"):
         model = SupervisedSegmentation(arch, encoder_weights=None)  # the weights come from model.pt
         image_size, batch_size = (256, 256), 8
     model.load_state_dict(torch.load(run_dir / "model.pt", map_location=device))
-    model.to(device).eval()
+    return model.to(device).eval(), summary, image_size, batch_size
+
+# re-evaluation of saved runs (adds metrics that did not exist when a run was trained, e.g. image F1)
+def reevaluate_run(run_dir, device="cuda"):
+    """Load the saved model of a run, evaluate it again on the test set with all_metrics() and update summary.json.
+    The metrics computed at training time are kept in summary["metrics_original"]."""
+    device = torch.device(device)
+    run_dir = Path(run_dir)
+    model, summary, image_size, batch_size = load_run_model(run_dir, device)
 
     # evaluating on the test set with the same evaluator and post-processing as at training time
     test_loader = DataLoader(test_dataset_for(summary["category"], image_size), batch_size=batch_size, shuffle=False)
@@ -249,6 +269,36 @@ def reevaluate_run(run_dir, device="cuda"):
     # keeping the original metrics and saving the new ones
     summary.setdefault("metrics_original", summary["metrics"])
     summary["metrics"] = {name: round(float(value), 4) for name, value in report.items()}
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
+    return summary
+
+def evaluate_run_on(run_dir, test_set, device="cuda"):
+    """Evaluate the saved model of a run on another test set and store the metrics in summary["extra_tests"][test_set].
+    test_set: "scenario2_test50" (the reduced real test set of Scenario 2) or
+              "synthetic" (the normal MVTec AD test images + the MIRAGE images of the synthetic test families).
+    The main metrics of the run (summary["metrics"]) are not changed."""
+    device = torch.device(device)
+    run_dir = Path(run_dir)
+    model, summary, image_size, batch_size = load_run_model(run_dir, device)
+
+    # choosing the test set
+    if test_set == "synthetic":
+        test_dataset = synthetic_test_dataset(summary["category"], image_size)
+    elif test_set == "scenario2_test50":
+        test_dataset = scenario2_test_dataset(summary["category"], image_size)
+    else:
+        raise ValueError(f"unknown test set: {test_set}")
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+
+    # same evaluator and post-processing as at training time
+    if summary["model"].startswith("dinomaly"):
+        report = Evaluator.evaluate(model, test_loader, all_metrics(), device)  # default min-max normalisation
+    else:
+        report = Evaluator.evaluate(model, test_loader, all_metrics(), device, postprocess=lambda x: x)
+
+    # saving the metrics of this test set next to the main metrics
+    metrics = {name: round(float(value), 4) for name, value in report.items()}
+    summary.setdefault("extra_tests", {})[test_set] = {"test_images": len(test_dataset), **metrics}
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     return summary
 
@@ -265,3 +315,16 @@ def reevaluate_all_runs(device="cuda", include_fixed_epochs=False):
         largest_change = max(abs(summary["metrics"][name] - value) for name, value in summary["metrics_original"].items())
         print(f"{summary_path.parent.name}: img_f1 {summary['metrics']['img_f1']:.4f}, "
               f"largest change of the old metrics {largest_change:.4f}")
+
+def evaluate_all_extra_tests(device="cuda"):
+    """Evaluate every saved run on the synthetic test set, and the Scenario-1 runs (supervised and Dinomaly)
+    also on the reduced Scenario-2 test set of their category (only categories that have a Scenario-2 split)."""
+    for summary_path in sorted((RUNS_DIR / "runs").glob("*/summary.json")):
+        summary = json.loads(summary_path.read_text())
+        test_sets = ["synthetic"]
+        has_scenario2_split = (scenario2_folder(summary["category"]) / "test_manifest.csv").exists()
+        if summary.get("scenario", 1) == 1 and has_scenario2_split:
+            test_sets.append("scenario2_test50")
+        for test_set in test_sets:
+            summary = evaluate_run_on(summary_path.parent, test_set, device)
+            print(f"{summary_path.parent.name} on {test_set}: pxl_f1 {summary['extra_tests'][test_set]['pxl_f1']:.4f}")
