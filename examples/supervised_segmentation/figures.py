@@ -5,6 +5,7 @@ Usage:
     python figures.py examples bottle     # PSPNet map and prediction at 0.5 (same as examples.py)
     python figures.py mirage bottle       # random sample of MIRAGE images with mask contours
     python figures.py table               # all summary.json files -> CSV (per run and mean ± std)
+    python figures.py synthetic grid --arch pspnet   # one model on MIRAGE images of the synthetic test set vs real defects
 """
 import argparse
 import json
@@ -90,6 +91,41 @@ def examples(category, seed=42, device="cpu"):
     shutil.copy(source, target)
     print("Copied to:", target)
 
+def synthetic_vs_real(category, arch="pspnet", n=3, seed=42, device="cpu"):
+    """The same Scenario-1 model on n MIRAGE images of the synthetic test set (top rows)
+    and on the first image of n real defect types of the MVTec AD test set (bottom rows)."""
+    device = torch.device(device)
+    model, summary, image_size, _ = pipeline.load_run_model(latest_run_dir(arch, category, seed), device)
+
+    # n anomalous images of each test set: MIRAGE images (label 1) and the first image of each real defect type
+    synthetic = pipeline.synthetic_test_dataset(category, image_size)
+    synthetic_rows = [("synthetic", synthetic, index) for index in range(len(synthetic))
+                      if synthetic.samples.iloc[index]["source"] == "mirage"][:n]
+    real = pipeline.test_dataset_for(category, image_size)
+    real_rows = [("real", real, index) for defect_type, index in first_index_per_type(real).items()
+                 if defect_type != "good"][:n]
+
+    rows = synthetic_rows + real_rows
+    figure, axes = plt.subplots(len(rows), 3, figsize=(9, 3 * len(rows)), squeeze=False)
+    for row, (test_set, dataset, index) in enumerate(rows):
+        image, label, mask, path = dataset[index]
+        with torch.no_grad():
+            anomaly_map, _ = model(image.unsqueeze(0).to(device))
+        axes[row, 0].imshow(image.permute(1, 2, 0).numpy())
+        axes[row, 0].set_title(f"{test_set}: {Path(path).parent.name}/{Path(path).name}", fontsize=9)
+        axes[row, 1].imshow(mask[0], cmap="gray")
+        axes[row, 1].set_title("Ground truth")
+        axes[row, 2].imshow(anomaly_map[0].cpu().numpy(), cmap="jet", vmin=0, vmax=1)
+        axes[row, 2].set_title(f"{arch} (max {anomaly_map.max():.2f})")
+        for axis in axes[row]:
+            axis.axis("off")
+
+    plt.tight_layout()
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = FIG_DIR / f"{category}_{arch}_synthetic_vs_real_seed{seed}.png"
+    plt.savefig(output_path, dpi=120)
+    plt.close(figure)
+    print("Saved to:", output_path)
 
 def mirage_sample(category, n=30, sample_seed=0, size=512):
     """Random MIRAGE images of one category with the mask outline in red."""
@@ -147,10 +183,11 @@ def results_table():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table"])
+    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic"])
     parser.add_argument("category", nargs="?")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--arch", default="pspnet")
     args = parser.parse_args()
     if args.figure == "compare":
         compare_maps(args.category, seed=args.seed, device=args.device)
@@ -158,5 +195,7 @@ if __name__ == "__main__":
         examples(args.category, seed=args.seed, device=args.device)
     elif args.figure == "mirage":
         mirage_sample(args.category)
+    elif args.figure == "synthetic":
+        synthetic_vs_real(args.category, arch=args.arch, seed=args.seed, device=args.device)
     else:
         results_table()
