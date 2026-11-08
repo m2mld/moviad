@@ -6,6 +6,7 @@ Usage:
     python figures.py mirage bottle       # random sample of MIRAGE images with mask contours
     python figures.py table               # all summary.json files -> CSV (per run and mean ± std)
     python figures.py synthetic grid --arch pspnet   # one model on MIRAGE images of the synthetic test set vs real defects
+    python figures.py all_models screw    # PSPNet, U-Net, DeepLabV3 and Dinomaly maps (first test image of each defect type)
 """
 import argparse
 import json
@@ -83,6 +84,51 @@ def compare_maps(category, seed=42, device="cpu"):
     plt.close(figure)
     print("Saved to:", output_path)
 
+def compare_all_models(category, archs=("pspnet", "unet", "deeplabv3"), seed=42, device="cpu"):
+    """Image, ground truth, the defect probability of each supervised model and the Dinomaly score
+    (min-max over the whole test set), for the first test image of each defect type."""
+    device = torch.device(device)
+    models = {arch: pipeline.load_run_model(latest_run_dir(arch, category, seed), device)[0] for arch in archs}
+    dinomaly = pipeline.load_run_model(latest_run_dir("dinomaly", category, seed), device)[0]
+
+    test_256 = pipeline.test_dataset_for(category, (256, 256))
+    test_224 = pipeline.test_dataset_for(category, (224, 224))
+
+    # Dinomaly scores normalised with min and max over the whole test set, as in MoViAD's Evaluator
+    dinomaly_maps = []
+    with torch.no_grad():
+        for images, *_ in torch.utils.data.DataLoader(test_224, batch_size=16, shuffle=False):
+            maps, _ = dinomaly(images.to(device))
+            dinomaly_maps.append(maps.cpu())
+    dinomaly_maps = torch.cat(dinomaly_maps)
+    dinomaly_maps = (dinomaly_maps - dinomaly_maps.min()) / (dinomaly_maps.max() - dinomaly_maps.min())
+
+    rows = first_index_per_type(test_256)
+    columns = 2 + len(archs) + 1
+    figure, axes = plt.subplots(len(rows), columns, figsize=(2.6 * columns, 2.6 * len(rows)), squeeze=False)
+    for row, (defect_type, index) in enumerate(rows.items()):
+        image, label, mask, path = test_256[index]
+        axes[row, 0].imshow(image.permute(1, 2, 0).clamp(0, 1).numpy())
+        axes[row, 0].set_title(defect_type, fontsize=11)
+        axes[row, 1].imshow(mask[0], cmap="gray")
+        axes[row, 1].set_title("Ground truth", fontsize=11)
+        for column, (arch, model) in enumerate(models.items(), start=2):
+            with torch.no_grad():
+                anomaly_map, _ = model(image.unsqueeze(0).to(device))
+            axes[row, column].imshow(anomaly_map[0].cpu().numpy(), cmap="jet", vmin=0, vmax=1)
+            axes[row, column].set_title(f"{arch} ({anomaly_map.max():.2f})", fontsize=11)
+        dinomaly_map = F.interpolate(dinomaly_maps[index][None, None], size=(256, 256), mode="bilinear")[0, 0]
+        axes[row, -1].imshow(dinomaly_map.numpy(), cmap="jet", vmin=0, vmax=1)
+        axes[row, -1].set_title("dinomaly", fontsize=11)
+        for axis in axes[row]:
+            axis.axis("off")
+
+    plt.tight_layout()
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = FIG_DIR / f"{category}_all_models_seed{seed}.png"
+    plt.savefig(output_path, dpi=120)
+    plt.close(figure)
+    print("Saved to:", output_path)
 
 def examples(category, seed=42, device="cpu"):
     source = save_pspnet_examples(category, seed=seed, device=device)
@@ -183,7 +229,7 @@ def results_table():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic"])
+    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic", "all_models"])
     parser.add_argument("category", nargs="?")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
@@ -197,5 +243,7 @@ if __name__ == "__main__":
         mirage_sample(args.category)
     elif args.figure == "synthetic":
         synthetic_vs_real(args.category, arch=args.arch, seed=args.seed, device=args.device)
+    elif args.figure == "all_models":
+        compare_all_models(args.category, seed=args.seed, device=args.device)
     else:
         results_table()
