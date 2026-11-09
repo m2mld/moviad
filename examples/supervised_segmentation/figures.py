@@ -7,6 +7,7 @@ Usage:
     python figures.py table               # all summary.json files -> CSV (per run and mean ± std)
     python figures.py synthetic grid --arch pspnet   # one model on MIRAGE images of the synthetic test set vs real defects
     python figures.py all_models screw    # PSPNet, U-Net, DeepLabV3 and Dinomaly maps (first test image of each defect type)
+    python figures.py scenarios pill --arch unet   # the same model trained in Scenario 1 vs Scenario 2 on the reduced test set
 """
 import argparse
 import json
@@ -130,6 +131,40 @@ def compare_all_models(category, archs=("pspnet", "unet", "deeplabv3"), seed=42,
     plt.close(figure)
     print("Saved to:", output_path)
 
+def compare_scenarios(category, arch="unet", seed=42, device="cpu"):
+    """The same architecture trained in Scenario 1 and in Scenario 2, on the first image of each defect type
+    of the reduced Scenario-2 test set (images that neither model saw during training)."""
+    device = torch.device(device)
+    model_s1 = pipeline.load_run_model(latest_run_dir(arch, category, seed), device)[0]
+    model_s2 = pipeline.load_run_model(latest_run_dir(f"{arch}_scenario2", category, seed), device)[0]
+
+    # the reduced test set is a subset of the MVTec AD test set: take the labels of the selected images
+    test = pipeline.scenario2_test_dataset(category, (256, 256))
+    labels = test.dataset.samples["label"].iloc[list(test.indices)].tolist()
+    rows = {defect_type: labels.index(defect_type) for defect_type in sorted(set(labels))}
+
+    figure, axes = plt.subplots(len(rows), 4, figsize=(10.4, 2.6 * len(rows)), squeeze=False)
+    for row, (defect_type, index) in enumerate(rows.items()):
+        image, label, mask, path = test[index]
+        axes[row, 0].imshow(image.permute(1, 2, 0).clamp(0, 1).numpy())
+        axes[row, 0].set_title(defect_type, fontsize=11)
+        axes[row, 1].imshow(mask[0], cmap="gray")
+        axes[row, 1].set_title("Ground truth", fontsize=11)
+        for column, (name, model) in enumerate([("Scenario 1", model_s1), ("Scenario 2", model_s2)], start=2):
+            with torch.no_grad():
+                anomaly_map, _ = model(image.unsqueeze(0).to(device))
+            axes[row, column].imshow(anomaly_map[0].cpu().numpy(), cmap="jet", vmin=0, vmax=1)
+            axes[row, column].set_title(f"{name} ({anomaly_map.max():.2f})", fontsize=11)
+        for axis in axes[row]:
+            axis.axis("off")
+
+    plt.tight_layout()
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = FIG_DIR / f"{category}_{arch}_scenario1_vs_2_seed{seed}.png"
+    plt.savefig(output_path, dpi=120)
+    plt.close(figure)
+    print("Saved to:", output_path)
+
 def examples(category, seed=42, device="cpu"):
     source = save_pspnet_examples(category, seed=seed, device=device)
     FIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -229,7 +264,7 @@ def results_table():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic", "all_models"])
+    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic", "all_models", "scenarios"])
     parser.add_argument("category", nargs="?")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
@@ -245,5 +280,7 @@ if __name__ == "__main__":
         synthetic_vs_real(args.category, arch=args.arch, seed=args.seed, device=args.device)
     elif args.figure == "all_models":
         compare_all_models(args.category, seed=args.seed, device=args.device)
+    elif args.figure == "scenarios":
+        compare_scenarios(args.category, arch=args.arch, seed=args.seed, device=args.device)
     else:
         results_table()
