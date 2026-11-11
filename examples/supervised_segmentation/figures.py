@@ -262,9 +262,30 @@ def results_table():
     print("Saved to:", FIG_DIR / "results_per_run.csv", "and", FIG_DIR / "results_mean_std.csv")
 
 
+def all_test_sets_table():
+    """One row per run and test set (main test + extra tests) -> figures/all_test_sets.csv.
+
+    Main test: full MVTec test set for Scenario 1 runs and Dinomaly, reduced test set for Scenario 2 runs.
+    Extra tests (summary["extra_tests"]): synthetic test set, and the reduced test set for Scenario 1 runs."""
+    rows = []
+    for path in sorted((pipeline.RUNS_DIR / "runs").glob("*/summary.json")):
+        summary = json.loads(path.read_text())
+        scenario = summary.get("scenario", 1)
+        base = {"run": path.parent.name, "model": summary["model"].split("_")[0],
+                "category": summary["category"], "scenario": scenario}
+        main_test = "full" if scenario == 1 else "scenario2_test50"
+        rows.append({**base, "test_set": main_test, "test_images": summary.get("test_images"), **summary["metrics"]})
+        for test_set, metrics in summary.get("extra_tests", {}).items():
+            rows.append({**base, "test_set": test_set, **metrics})
+    table = pd.DataFrame(rows)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
+    table.to_csv(FIG_DIR / "all_test_sets.csv", index=False)
+    print(table.groupby(["scenario", "test_set", "model"]).size().to_string())
+    print(len(table), "rows saved to:", FIG_DIR / "all_test_sets.csv")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic", "all_models", "scenarios"])
+    parser.add_argument("figure", choices=["compare", "examples", "mirage", "table", "synthetic", "all_models", "scenarios", "all_tests"])
     parser.add_argument("category", nargs="?")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
@@ -282,5 +303,7 @@ if __name__ == "__main__":
         compare_all_models(args.category, seed=args.seed, device=args.device)
     elif args.figure == "scenarios":
         compare_scenarios(args.category, arch=args.arch, seed=args.seed, device=args.device)
+    elif args.figure == "all_tests":
+        all_test_sets_table()
     else:
         results_table()
