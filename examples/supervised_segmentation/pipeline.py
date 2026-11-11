@@ -329,5 +329,7 @@ def evaluate_all_extra_tests(device="cuda"):
         if summary.get("scenario", 1) == 1 and has_scenario2_split:
             test_sets.append("scenario2_test50")
         for test_set in test_sets:
+            if test_set in summary.get("extra_tests", {}):
+                continue  # already evaluated, e.g. in an earlier call
             summary = evaluate_run_on(summary_path.parent, test_set, device)
             print(f"{summary_path.parent.name} on {test_set}: pxl_f1 {summary['extra_tests'][test_set]['pxl_f1']:.4f}")
