@@ -131,6 +131,9 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
     print("Saved to:", run_dir)
     return run_dir
 
+def model_name(arch):
+    """Name stored in summary.json: architecture, encoder and library, e.g. "unet_resnet50_smp"."""
+    return "segformer_mitb2_hf" if arch == "segformer" else f"{arch}_resnet50_smp"
 
 # supervised segmentation (any smp architecture)
 def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size=8, max_epochs=50, patience=5,
@@ -180,7 +183,7 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
 
     # collecting all settings and results in one summary
     summary = {
-        "model": f"{arch}_resnet50_smp", "training": "early_stopping", "category": category, "seed": seed,
+        "model": model_name(arch), "training": "early_stopping", "category": category, "seed": seed,
         "scenario": scenario, "split": "family" if scenario == 1 else "family + real anomalies",
         "train_images": len(train_dataset), "val_images": len(val_dataset), "test_images": len(test_dataset),
         "max_epochs": max_epochs, "patience": patience, "epochs_run": len(trainer.history),

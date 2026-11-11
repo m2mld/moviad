@@ -8,6 +8,30 @@ from tqdm import tqdm
 from moviad.models.training_args import TrainingArgs
 from moviad.models.vad_model import VADModel
 
+from torch import nn
+
+HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2"}  # ImageNet-pretrained MiT-B2 encoder
+LABELS = {"id2label": {0: "normal", 1: "anomaly"}, "label2id": {"normal": 0, "anomaly": 1}}
+
+
+class HFSegformer(nn.Module):
+    """Hugging Face SegFormer that returns logits at the input resolution, like the smp models.
+
+    SegFormer predicts at 1/4 of the input size, so the logits are upsampled to the image size."""
+
+    def __init__(self, checkpoint, pretrained=True):
+        super().__init__()
+        from transformers import SegformerConfig, SegformerForSemanticSegmentation
+        if pretrained:
+            self.network = SegformerForSemanticSegmentation.from_pretrained(checkpoint, num_labels=2, **LABELS)
+        else:  # the weights will be loaded from a saved run
+            config = SegformerConfig.from_pretrained(checkpoint, num_labels=2, **LABELS)
+            self.network = SegformerForSemanticSegmentation(config)
+
+    def forward(self, images):
+        logits = self.network(pixel_values=images).logits
+        return F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+
 @dataclass
 class SegmentationTrainArgs(TrainingArgs):
     """Training settings: which optimizer and which loss."""
@@ -29,7 +53,10 @@ class SupervisedSegmentation(VADModel):
 
     def __init__(self, arch="pspnet", encoder_name="resnet50", encoder_weights="imagenet"):
         super().__init__()
-        self.network = smp.create_model(arch, encoder_name=encoder_name, encoder_weights=encoder_weights, classes=2)
+        if arch in HF_CHECKPOINTS:
+            self.network = HFSegformer(HF_CHECKPOINTS[arch], pretrained=encoder_weights is not None)
+        else:
+            self.network = smp.create_model(arch, encoder_name=encoder_name, encoder_weights=encoder_weights, classes=2)
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
 
