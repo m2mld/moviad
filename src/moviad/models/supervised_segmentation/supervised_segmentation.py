@@ -10,7 +10,8 @@ from moviad.models.vad_model import VADModel
 
 from torch import nn
 
-HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2"}  # ImageNet-pretrained MiT-B2 encoder
+HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2",  # ImageNet-pretrained MiT-B2 encoder
+                  "mask2former": "facebook/mask2former-swin-tiny-ade-semantic"}  # full model, ADE20K
 LABELS = {"id2label": {0: "normal", 1: "anomaly"}, "label2id": {"normal": 0, "anomaly": 1}}
 
 
@@ -31,6 +32,41 @@ class HFSegformer(nn.Module):
     def forward(self, images):
         logits = self.network(pixel_values=images).logits
         return F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+
+class HFMask2Former(nn.Module):
+    """Hugging Face Mask2Former (pretrained on ADE20K semantic segmentation), fine-tuned for normal/anomaly.
+
+    Mask2Former predicts 100 candidate masks, each with a class (normal, anomaly or "no object").
+    Training uses its own loss; for evaluation the candidate masks are combined into per-pixel class
+    probabilities, returned as log-probabilities so that a softmax gives back the probabilities."""
+
+    def __init__(self, checkpoint, pretrained=True):
+        super().__init__()
+        from transformers import Mask2FormerConfig, Mask2FormerForUniversalSegmentation
+        if pretrained:
+            self.network = Mask2FormerForUniversalSegmentation.from_pretrained(
+                checkpoint, num_labels=2, ignore_mismatched_sizes=True, **LABELS)
+        else:  # the weights will be loaded from a saved run
+            config = Mask2FormerConfig.from_pretrained(checkpoint, num_labels=2, **LABELS)
+            self.network = Mask2FormerForUniversalSegmentation(config)
+
+    def compute_loss(self, images, targets):
+        """Mask2Former loss; targets (batch x H x W, 0/1) become one binary mask per class present in each image."""
+        mask_labels = [torch.stack([(target == c).float() for c in target.unique()]) for target in targets]
+        class_labels = [target.unique() for target in targets]
+        return self.network(pixel_values=images, mask_labels=mask_labels, class_labels=class_labels).loss
+
+    def forward(self, images):
+        outputs = self.network(pixel_values=images)
+        class_probs = outputs.class_queries_logits.softmax(dim=-1)[..., :-1]  # drop "no object"
+        masks = outputs.masks_queries_logits.sigmoid()
+        maps = torch.einsum("bqc,bqhw->bchw", class_probs, masks)  # batch x 2 x H/4 x W/4
+        maps = F.interpolate(maps, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        probs = maps / maps.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        return probs.clamp_min(1e-6).log()
+
+
+HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former}
 
 @dataclass
 class SegmentationTrainArgs(TrainingArgs):
@@ -54,7 +90,7 @@ class SupervisedSegmentation(VADModel):
     def __init__(self, arch="pspnet", encoder_name="resnet50", encoder_weights="imagenet"):
         super().__init__()
         if arch in HF_CHECKPOINTS:
-            self.network = HFSegformer(HF_CHECKPOINTS[arch], pretrained=encoder_weights is not None)
+            self.network = HF_WRAPPERS[arch](HF_CHECKPOINTS[arch], pretrained=encoder_weights is not None)
         else:
             self.network = smp.create_model(arch, encoder_name=encoder_name, encoder_weights=encoder_weights, classes=2)
         self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
@@ -81,8 +117,10 @@ class SupervisedSegmentation(VADModel):
         images, masks = batch
         device = self.mean.device
         images, targets = images.to(device), masks[:, 0].to(device)
-        logits = self(images)
-        loss = training_args.loss_function(logits, targets)
+        if hasattr(self.network, "compute_loss"):  # models with their own loss (Mask2Former)
+            loss = self.network.compute_loss((images - self.mean) / self.std, targets)
+        else:
+            loss = training_args.loss_function(self(images), targets)
         training_args.optimizer.zero_grad()
         loss.backward()
         training_args.optimizer.step()

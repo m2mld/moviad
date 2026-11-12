@@ -131,9 +131,12 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
     print("Saved to:", run_dir)
     return run_dir
 
+HF_MODEL_NAMES = {"segformer": "segformer_mitb2_hf", "mask2former": "mask2former_swintiny_hf"}
+
+
 def model_name(arch):
     """Name stored in summary.json: architecture, encoder and library, e.g. "unet_resnet50_smp"."""
-    return "segformer_mitb2_hf" if arch == "segformer" else f"{arch}_resnet50_smp"
+    return HF_MODEL_NAMES.get(arch, f"{arch}_resnet50_smp")
 
 # supervised segmentation (any smp architecture)
 def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size=8, max_epochs=50, patience=5,
