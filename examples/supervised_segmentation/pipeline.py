@@ -123,8 +123,6 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
     run_dir = RUNS_DIR / "runs" / f"{name}_{category}_seed{seed}_{datetime.now():%Y%m%d_%H%M}"
     run_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), run_dir / "model.pt")
-    if last_state is not None:
-        torch.save(last_state, run_dir / "last_model.pt")
     if history is not None:
         pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
