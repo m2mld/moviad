@@ -133,6 +133,9 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
 
 HF_MODEL_NAMES = {"segformer": "segformer_mitb2_hf", "mask2former": "mask2former_swintiny_hf"}
 
+# Mask2Former settings from its paper (AdamW, lr 1e-4, weight decay 0.05, gradient clipping 0.01)
+OPTIMIZER_SETTINGS = {"mask2former": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.05,
+                                          grad_clip_norm=0.01)}
 
 def model_name(arch):
     """Name stored in summary.json: architecture, encoder and library, e.g. "unet_resnet50_smp"."""
@@ -168,7 +171,8 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
     # creating the model and the trainer (with early stopping)
     set_seed(seed)
     model = SupervisedSegmentation(arch, encoder_weights=encoder_weights).to(device)
-    train_args = SegmentationTrainArgs(batch_size=batch_size, epochs=max_epochs, evaluation_epoch_interval=1)
+    train_args = SegmentationTrainArgs(batch_size=batch_size, epochs=max_epochs, evaluation_epoch_interval=1,
+                                       **OPTIMIZER_SETTINGS.get(arch, {}))
     trainer = EarlyStoppingTrainer(train_args, model, train_dataset, val_dataset, [F1(MetricLvl.PIXEL)], device,
                                    patience=patience)
 
@@ -191,6 +195,7 @@ def train_and_evaluate_segmentation(category, arch="pspnet", seed=42, batch_size
         "train_images": len(train_dataset), "val_images": len(val_dataset), "test_images": len(test_dataset),
         "max_epochs": max_epochs, "patience": patience, "epochs_run": len(trainer.history),
         "best_epoch": trainer.best_epoch, "best_val_" + trainer.monitor: round(trainer.best_score, 4),
+        "optimizer": train_args.optimizer_name, "learning_rate": train_args.learning_rate,
         "batch_size": batch_size, "device": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
         "train_minutes": round(train_minutes, 2), "train_peak_vram_mb": train_vram and round(train_vram, 1),
         "inference_ms_per_image": round(inference_ms, 1), "inference_peak_vram_mb": inference_vram and round(inference_vram, 1),

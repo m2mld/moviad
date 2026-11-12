@@ -69,14 +69,25 @@ class HFMask2Former(nn.Module):
 HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former}
 
 @dataclass
+@dataclass
 class SegmentationTrainArgs(TrainingArgs):
-    """Training settings: which optimizer and which loss."""
+    """Training settings: which optimizer and which loss.
+
+    The smp models and SegFormer use SGD; Mask2Former uses AdamW with gradient clipping, as in its paper,
+    because with SGD and a learning rate of 0.01 its weights diverge to NaN in the first epoch."""
     learning_rate: float = 0.01
+    optimizer_name: str = "sgd"
+    weight_decay: float = 0.0005
+    grad_clip_norm: float | None = None
 
     def init_train(self, model):
         if self.optimizer is None:
-            self.optimizer = torch.optim.SGD(model.parameters(), lr=self.learning_rate,
-                                             momentum=0.9, weight_decay=0.0005)
+            if self.optimizer_name == "adamw":
+                self.optimizer = torch.optim.AdamW(model.parameters(), lr=self.learning_rate,
+                                                   weight_decay=self.weight_decay)
+            else:
+                self.optimizer = torch.optim.SGD(model.parameters(), lr=self.learning_rate,
+                                                 momentum=0.9, weight_decay=self.weight_decay)
         if self.loss_function is None:
             self.loss_function = F.cross_entropy
 
@@ -123,5 +134,7 @@ class SupervisedSegmentation(VADModel):
             loss = training_args.loss_function(self(images), targets)
         training_args.optimizer.zero_grad()
         loss.backward()
+        if training_args.grad_clip_norm is not None:  # limits the size of the update (Mask2Former)
+            torch.nn.utils.clip_grad_norm_(self.parameters(), training_args.grad_clip_norm)
         training_args.optimizer.step()
         return loss.item()
