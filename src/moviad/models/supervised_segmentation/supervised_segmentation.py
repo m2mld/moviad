@@ -66,6 +66,8 @@ class HFMask2Former(nn.Module):
         probs = maps / maps.sum(dim=1, keepdim=True).clamp_min(1e-6)
         return probs.clamp_min(1e-6).log()
 
+TEXT_LENGTH = 16  # our texts have at most ~7 tokens; 77 (the default) does not fit into GPU memory
+
 class HFOneFormer(nn.Module):
     """Hugging Face OneFormer (Swin-T, pretrained on ADE20K), fine-tuned for normal/anomaly in semantic mode.
 
@@ -80,9 +82,11 @@ class HFOneFormer(nn.Module):
         from transformers import OneFormerConfig, OneFormerForUniversalSegmentation, OneFormerProcessor
         if pretrained:
             self.network = OneFormerForUniversalSegmentation.from_pretrained(
-                checkpoint, is_training=True, num_labels=2, ignore_mismatched_sizes=True, **LABELS)
+                checkpoint, is_training=True, num_labels=2, ignore_mismatched_sizes=True,
+                text_encoder_context_length=TEXT_LENGTH, **LABELS)
         else:  # the weights will be loaded from a saved run
-            config = OneFormerConfig.from_pretrained(checkpoint, is_training=True, num_labels=2, **LABELS)
+            config = OneFormerConfig.from_pretrained(checkpoint, is_training=True, num_labels=2,
+                                                     text_encoder_context_length=TEXT_LENGTH, **LABELS)
             self.network = OneFormerForUniversalSegmentation(config)
         config = self.network.config
         self.num_text = config.num_queries - config.text_encoder_n_ctx  # 150 - 16 = 134 texts per image
@@ -94,8 +98,8 @@ class HFOneFormer(nn.Module):
         # token ids are fixed, so they are computed once (buffers, not saved in model.pt)
         self.register_buffer("task_tokens", tokenize(["the task is semantic"], processor.task_seq_length), persistent=False)
         self.register_buffer("class_tokens", tokenize(["a photo with a normal", "a photo with a anomaly"],
-                                                      processor.max_seq_length), persistent=False)
-        self.register_buffer("filler_tokens", tokenize(["a semantic photo"], processor.max_seq_length), persistent=False)
+                                                      TEXT_LENGTH), persistent=False)
+        self.register_buffer("filler_tokens", tokenize(["a semantic photo"], TEXT_LENGTH), persistent=False)
 
     def train(self, mode=True):
         super().train(mode)
