@@ -11,7 +11,8 @@ from moviad.models.vad_model import VADModel
 from torch import nn
 
 HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2",  # ImageNet-pretrained MiT-B2 encoder
-                  "mask2former": "facebook/mask2former-swin-tiny-ade-semantic"}  # full model, ADE20K
+                  "mask2former": "facebook/mask2former-swin-tiny-ade-semantic",  # full model, ADE20K
+                  "oneformer": "shi-labs/oneformer_ade20k_swin_tiny"}  # full model, ADE20K
 LABELS = {"id2label": {0: "normal", 1: "anomaly"}, "label2id": {"normal": 0, "anomaly": 1}}
 
 
@@ -65,8 +66,65 @@ class HFMask2Former(nn.Module):
         probs = maps / maps.sum(dim=1, keepdim=True).clamp_min(1e-6)
         return probs.clamp_min(1e-6).log()
 
+class HFOneFormer(nn.Module):
+    """Hugging Face OneFormer (Swin-T, pretrained on ADE20K), fine-tuned for normal/anomaly in semantic mode.
 
-HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former}
+    Like Mask2Former it predicts candidate masks with classes (150 here). It also needs the task text
+    "the task is semantic" and, for training, one text per mask ("a photo with a anomaly"), used by its
+    query-text contrastive loss. The text encoder is only used for this loss (the public checkpoint does
+    not contain it, so it is trained from scratch). OneFormer switches its text branch and dropout with its
+    own flag `is_training`, which is therefore set in train() and eval()."""
+
+    def __init__(self, checkpoint, pretrained=True):
+        super().__init__()
+        from transformers import OneFormerConfig, OneFormerForUniversalSegmentation, OneFormerProcessor
+        if pretrained:
+            self.network = OneFormerForUniversalSegmentation.from_pretrained(
+                checkpoint, is_training=True, num_labels=2, ignore_mismatched_sizes=True, **LABELS)
+        else:  # the weights will be loaded from a saved run
+            config = OneFormerConfig.from_pretrained(checkpoint, is_training=True, num_labels=2, **LABELS)
+            self.network = OneFormerForUniversalSegmentation(config)
+        config = self.network.config
+        self.num_text = config.num_queries - config.text_encoder_n_ctx  # 150 - 16 = 134 texts per image
+        processor = OneFormerProcessor.from_pretrained(checkpoint)  # CLIP tokenizer: text -> token ids
+
+        def tokenize(texts, length):
+            return processor._preprocess_text(texts, max_length=length)
+
+        # token ids are fixed, so they are computed once (buffers, not saved in model.pt)
+        self.register_buffer("task_tokens", tokenize(["the task is semantic"], processor.task_seq_length), persistent=False)
+        self.register_buffer("class_tokens", tokenize(["a photo with a normal", "a photo with a anomaly"],
+                                                      processor.max_seq_length), persistent=False)
+        self.register_buffer("filler_tokens", tokenize(["a semantic photo"], processor.max_seq_length), persistent=False)
+
+    def train(self, mode=True):
+        super().train(mode)
+        for module in self.network.modules():
+            if hasattr(module, "is_training"):
+                module.is_training = mode
+        return self
+
+    def compute_loss(self, images, targets):
+        """OneFormer loss; one binary mask, class and text per class present in each image."""
+        mask_labels = [torch.stack([(target == c).float() for c in target.unique()]) for target in targets]
+        class_labels = [target.unique() for target in targets]
+        text_inputs = torch.stack([torch.cat([self.class_tokens[classes],
+                                              self.filler_tokens.expand(self.num_text - len(classes), -1)])
+                                   for classes in class_labels])
+        task_inputs = self.task_tokens.expand(len(images), -1)
+        return self.network(pixel_values=images, task_inputs=task_inputs, text_inputs=text_inputs,
+                            mask_labels=mask_labels, class_labels=class_labels).loss
+
+    def forward(self, images):
+        outputs = self.network(pixel_values=images, task_inputs=self.task_tokens.expand(len(images), -1))
+        class_probs = outputs.class_queries_logits.softmax(dim=-1)[..., :-1]  # drop "no object"
+        masks = outputs.masks_queries_logits.sigmoid()
+        maps = torch.einsum("bqc,bqhw->bchw", class_probs, masks)
+        maps = F.interpolate(maps, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        probs = maps / maps.sum(dim=1, keepdim=True).clamp_min(1e-6)
+        return probs.clamp_min(1e-6).log()
+
+HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former, "oneformer": HFOneFormer}
 
 @dataclass
 @dataclass
