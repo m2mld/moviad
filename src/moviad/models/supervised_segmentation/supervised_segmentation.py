@@ -12,7 +12,8 @@ from torch import nn
 
 HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2",  # ImageNet-pretrained MiT-B2 encoder
                   "mask2former": "facebook/mask2former-swin-tiny-ade-semantic",  # full model, ADE20K
-                  "oneformer": "shi-labs/oneformer_ade20k_swin_tiny"}  # full model, ADE20K
+                  "oneformer": "shi-labs/oneformer_ade20k_swin_tiny",  # full model, ADE20K
+                  "sam3": "facebook/sam3"}  # full model, text prompts (gated, needs Hugging Face login)  
 LABELS = {"id2label": {0: "normal", 1: "anomaly"}, "label2id": {"normal": 0, "anomaly": 1}}
 
 
@@ -128,7 +129,51 @@ class HFOneFormer(nn.Module):
         probs = maps / maps.sum(dim=1, keepdim=True).clamp_min(1e-6)
         return probs.clamp_min(1e-6).log()
 
-HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former, "oneformer": HFOneFormer}
+SAM3_PROMPT = "defect"
+SAM3_SIZE = 1008  # fixed by the rotary position embeddings of the SAM 3 image encoder
+
+
+class HFSam3(nn.Module):
+    """SAM 3 with the text prompt "defect". The image and text encoders are frozen (about 808 M parameters);
+    only the decoders (about 33 M) can be trained.
+
+    The semantic segmentation head gives one defect logit z per pixel. It is returned as the two-class
+    logits [0, z], so that the softmax and cross-entropy used for all models equal a sigmoid and a binary
+    cross-entropy on z. Images arrive normalized with the ImageNet mean and std; SAM 3 expects
+    1008 x 1008 images normalized with mean 0.5 and std 0.5."""
+
+    def __init__(self, checkpoint, pretrained=True):
+        super().__init__()
+        from transformers import Sam3Config, Sam3Model, Sam3Processor
+        if pretrained:
+            self.network = Sam3Model.from_pretrained(checkpoint)
+        else:  # the weights will be loaded from a saved run
+            self.network = Sam3Model(Sam3Config.from_pretrained(checkpoint))
+        for module in (self.network.vision_encoder, self.network.text_encoder, self.network.text_projection):
+            module.requires_grad_(False)
+
+        # the prompt is fixed, so its token ids are computed once (buffers, not saved in model.pt)
+        tokens = Sam3Processor.from_pretrained(checkpoint).tokenizer(
+            SAM3_PROMPT, return_tensors="pt", padding="max_length", max_length=32)
+        self.register_buffer("input_ids", tokens["input_ids"], persistent=False)
+        self.register_buffer("attention_mask", tokens["attention_mask"], persistent=False)
+        self.register_buffer("imagenet_mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1), persistent=False)
+        self.register_buffer("imagenet_std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1), persistent=False)
+
+    def forward(self, images):
+        pixels = (images * self.imagenet_std + self.imagenet_mean - 0.5) / 0.5  # ImageNet -> SAM 3 normalization
+        pixels = F.interpolate(pixels, size=(SAM3_SIZE, SAM3_SIZE), mode="bilinear", align_corners=False)
+        with torch.no_grad():  # frozen encoders: no activations are kept for the backward pass
+            vision = self.network.get_vision_features(pixels)
+            text = self.network.get_text_features(input_ids=self.input_ids, attention_mask=self.attention_mask)
+        batch_size = len(images)
+        text.pooler_output = text.pooler_output.expand(batch_size, -1, -1)
+        outputs = self.network(vision_embeds=vision, text_embeds=text,
+                               attention_mask=self.attention_mask.expand(batch_size, -1))
+        logits = F.interpolate(outputs.semantic_seg, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        return torch.cat([torch.zeros_like(logits), logits], dim=1)
+
+HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former, "oneformer": HFOneFormer, "sam3": HFSam3}
 
 @dataclass
 @dataclass

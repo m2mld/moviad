@@ -114,22 +114,25 @@ def measure_inference(model, loader, n_images, device):
     return ms, vram
 
 
-def save_run(name, category, seed, model, summary, save, last_state=None, history=None):
-    """model.pt holds the model that was evaluated (the best epoch when early stopping is used)."""
+def save_run(name, category, seed, model, summary, save, last_state=None, history=None, save_model=True):
+    """model.pt holds the model that was evaluated (the best epoch when early stopping is used).
+    save_model=False: no model.pt (zero-shot runs use the public pretrained weights)."""
     print(json.dumps(summary, indent=2))
     if not save:
         print("Test run: nothing saved.")
         return None
     run_dir = RUNS_DIR / "runs" / f"{name}_{category}_seed{seed}_{datetime.now():%Y%m%d_%H%M}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(model.state_dict(), run_dir / "model.pt")
+    if save_model:
+        torch.save(model.state_dict(), run_dir / "model.pt")
     if history is not None:
         pd.DataFrame(history).to_csv(run_dir / "history.csv", index=False)
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2))
     print("Saved to:", run_dir)
     return run_dir
 
-HF_MODEL_NAMES = {"segformer": "segformer_mitb2_hf", "mask2former": "mask2former_swintiny_hf", "oneformer": "oneformer_swintiny_hf"}
+HF_MODEL_NAMES = {"segformer": "segformer_mitb2_hf", "mask2former": "mask2former_swintiny_hf", 
+                  "oneformer": "oneformer_swintiny_hf", "sam3": "sam3_hf"}
 
 # Mask2Former settings from its paper (AdamW, lr 1e-4, weight decay 0.05, gradient clipping 0.01)
 OPTIMIZER_SETTINGS = {"mask2former": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.05,
@@ -248,18 +251,48 @@ def train_and_evaluate_dinomaly(category, seed=42, batch_size=32, total_iteratio
     save_run("dinomaly", category, seed, model, summary, save)
     return summary
 
+# zero-shot evaluation (no training; SAM 3 with the text prompt "defect")
+def evaluate_zero_shot(category, arch="sam3", batch_size=2, device="cuda", save=True):
+    """Evaluate a pretrained model on the MVTec AD test set without any training on our data.
+    Only for models that can segment defects without training (SAM 3, prompted with "defect").
+    The model is not saved, because its weights are the public pretrained ones."""
+    device = torch.device(device)
+    test_dataset = test_dataset_for(category, (256, 256))
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    model = SupervisedSegmentation(arch).to(device)
+
+    # inference time and memory on the first 16 test images (the model is slow), then the full evaluation
+    timing_dataset = Subset(test_dataset, list(range(16)))
+    timing_loader = DataLoader(timing_dataset, batch_size=batch_size, shuffle=False)
+    inference_ms, inference_vram = measure_inference(model, timing_loader, len(timing_dataset), device)
+    report = Evaluator.evaluate(model, test_loader, all_metrics(), device, postprocess=lambda x: x)
+
+    summary = {
+        "model": model_name(arch), "training": "zero_shot", "category": category, "scenario": 1,
+        "test_images": len(test_dataset), "batch_size": batch_size,
+        "device": torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu",
+        "inference_ms_per_image": round(inference_ms, 1),
+        "inference_peak_vram_mb": inference_vram and round(inference_vram, 1),
+        "metrics": {name: round(float(value), 4) for name, value in report.items()},
+    }
+    save_run(f"{arch}_zeroshot", category, 42, model, summary, save, save_model=False)
+    return summary
+
 def load_run_model(run_dir, device):
     """Rebuild the model of a saved run (same settings as in training) and load its saved weights.
+    Zero-shot runs have no model.pt: their model is rebuilt with the public pretrained weights.
     Returns the model, the run summary, and the image size and batch size used for that model."""
     summary = json.loads((run_dir / "summary.json").read_text())
+    zero_shot = summary.get("training") == "zero_shot"
     if summary["model"].startswith("dinomaly"):
         model = Dinomaly("deit_tiny_patch16_224.fb_in1k")
         image_size, batch_size = (224, 224), 32
     else:
         arch = summary["model"].split("_")[0]  # e.g. "unet_resnet50_smp" -> "unet"
-        model = SupervisedSegmentation(arch, encoder_weights=None)  # the weights come from model.pt
-        image_size, batch_size = (256, 256), 8
-    model.load_state_dict(torch.load(run_dir / "model.pt", map_location=device))
+        model = SupervisedSegmentation(arch, encoder_weights="imagenet" if zero_shot else None)
+        image_size, batch_size = (256, 256), 2 if arch == "sam3" else 8
+    if not zero_shot:
+        model.load_state_dict(torch.load(run_dir / "model.pt", map_location=device))
     return model.to(device).eval(), summary, image_size, batch_size
 
 # re-evaluation of saved runs (adds metrics that did not exist when a run was trained, e.g. image F1)
