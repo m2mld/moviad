@@ -13,7 +13,9 @@ from torch import nn
 HF_CHECKPOINTS = {"segformer": "nvidia/mit-b2",  # ImageNet-pretrained MiT-B2 encoder
                   "mask2former": "facebook/mask2former-swin-tiny-ade-semantic",  # full model, ADE20K
                   "oneformer": "shi-labs/oneformer_ade20k_swin_tiny",  # full model, ADE20K
-                  "sam3": "facebook/sam3"}  # full model, text prompts (gated, needs Hugging Face login)  
+                  "sam3": "facebook/sam3",  # full model, text prompts (gated, needs Hugging Face login)
+                  "sam2tiny": "facebook/sam2.1-hiera-tiny",  # full model, box/point prompts
+                  "sam2small": "facebook/sam2.1-hiera-small"}  # full model, box/point prompts
 LABELS = {"id2label": {0: "normal", 1: "anomaly"}, "label2id": {"normal": 0, "anomaly": 1}}
 
 
@@ -173,7 +175,38 @@ class HFSam3(nn.Module):
         logits = F.interpolate(outputs.semantic_seg, size=images.shape[-2:], mode="bilinear", align_corners=False)
         return torch.cat([torch.zeros_like(logits), logits], dim=1)
 
-HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former, "oneformer": HFOneFormer, "sam3": HFSam3}
+SAM2_SIZE = 1024  # input size of the SAM 2.1 image encoder
+
+
+class HFSam2(nn.Module):
+    """SAM 2.1 (Hiera image encoder), prompted with one box over the whole image and fine-tuned to return
+    the defect mask (an empty mask for normal images). SAM 2.1 has no text prompt, so it cannot be used
+    without training. The mask decoder gives one logit z per pixel at 256 x 256, returned as the two-class
+    logits [0, z] at the input size, as for SAM 3. SAM 2.1 uses the ImageNet normalization, like our input."""
+
+    def __init__(self, checkpoint, pretrained=True):
+        super().__init__()
+        from transformers import Sam2Config, Sam2Model
+        if pretrained:
+            self.network = Sam2Model.from_pretrained(checkpoint)
+        else:  # the weights will be loaded from a saved run
+            self.network = Sam2Model(Sam2Config.from_pretrained(checkpoint))
+        # box in the coordinates of the 1024 x 1024 input: the whole image
+        # partial fine-tuning: the image encoder is frozen, only the prompt encoder and the mask decoder are
+        # trained; training the whole model at 1024 x 1024 does not fit into 12 GB
+        self.network.vision_encoder.requires_grad_(False)
+        self.register_buffer("box", torch.tensor([[[0.0, 0.0, SAM2_SIZE, SAM2_SIZE]]]), persistent=False)
+
+    def forward(self, images):
+        pixels = F.interpolate(images, size=(SAM2_SIZE, SAM2_SIZE), mode="bilinear", align_corners=False)
+        outputs = self.network(pixel_values=pixels, input_boxes=self.box.expand(len(images), -1, -1),
+                               multimask_output=False)
+        logits = outputs.pred_masks[:, 0]  # batch x 1 x 256 x 256 (one box, one mask)
+        logits = F.interpolate(logits, size=images.shape[-2:], mode="bilinear", align_corners=False)
+        return torch.cat([torch.zeros_like(logits), logits], dim=1)
+
+HF_WRAPPERS = {"segformer": HFSegformer, "mask2former": HFMask2Former, "oneformer": HFOneFormer, 
+               "sam3": HFSam3, "sam2tiny": HFSam2, "sam2small": HFSam2}
 
 @dataclass
 @dataclass

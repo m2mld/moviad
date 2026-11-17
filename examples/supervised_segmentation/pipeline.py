@@ -132,13 +132,16 @@ def save_run(name, category, seed, model, summary, save, last_state=None, histor
     return run_dir
 
 HF_MODEL_NAMES = {"segformer": "segformer_mitb2_hf", "mask2former": "mask2former_swintiny_hf", 
-                  "oneformer": "oneformer_swintiny_hf", "sam3": "sam3_hf"}
+                  "oneformer": "oneformer_swintiny_hf", "sam3": "sam3_hf",
+                  "sam2tiny": "sam2tiny_hf", "sam2small": "sam2small_hf"}
 
 # Mask2Former settings from its paper (AdamW, lr 1e-4, weight decay 0.05, gradient clipping 0.01)
 OPTIMIZER_SETTINGS = {"mask2former": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.05,
                                           grad_clip_norm=0.01),
                       "oneformer": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.1,
-                                        grad_clip_norm=0.01)}
+                                        grad_clip_norm=0.01),
+                      "sam2tiny": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.01),
+                      "sam2small": dict(optimizer_name="adamw", learning_rate=1e-4, weight_decay=0.01)}
 
 def model_name(arch):
     """Name stored in summary.json: architecture, encoder and library, e.g. "unet_resnet50_smp"."""
